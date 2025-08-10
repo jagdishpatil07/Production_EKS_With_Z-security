@@ -1,5 +1,5 @@
 variable "ssh_key_name" {
   description = "The name of the SSH key pair to use for instances"
   type        = string
-  default     = "KEY-1" # AWS Key Pair name (without .pem)
+  default     = "KEY_AWS" # AWS Key Pair name (without .pem)
 }
