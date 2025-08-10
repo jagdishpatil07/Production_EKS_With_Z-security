@@ -73,7 +73,7 @@ resource "aws_route_table_association" "public_assoc" {
 # NAT Gateway for private subnets
 resource "aws_eip" "nat_eip" {
   count = 1
-  vpc   = true
+  # 'vpc = true' removed – now default
 }
 
 resource "aws_nat_gateway" "nat_gw" {
