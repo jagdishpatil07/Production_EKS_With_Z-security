@@ -104,7 +104,8 @@ resource "aws_security_group" "jagdish_node_sg" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["YOUR_PUBLIC_IP/32"] # Restrict SSH
+    cidr_blocks = ["3.80.209.221/32"]
+ # Restrict SSH
   }
 
   egress {
