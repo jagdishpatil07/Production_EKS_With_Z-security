@@ -1,5 +1,16 @@
 provider "aws" {
-  region = "ap-south-1"
+  region = "us-east-1"
+}
+
+variable "ssh_key_name" {
+  type        = string
+  description = "Name of the EC2 keypair for SSH to nodes"
+}
+
+variable "admin_cidr" {
+  type        = string
+  description = "CIDR allowed to SSH to nodes (e.g. 203.0.113.0/32)"
+  default     = "0.0.0.0/32" # change this to your office/home IP for security
 }
 
 # --------------------
@@ -20,7 +31,7 @@ resource "aws_subnet" "public_subnet" {
   count                   = 2
   vpc_id                  = aws_vpc.jagdish_vpc.id
   cidr_block              = cidrsubnet(aws_vpc.jagdish_vpc.cidr_block, 8, count.index)
-  availability_zone       = element(["ap-south-1a", "ap-south-1b"], count.index)
+  availability_zone       = element(["us-east-1a", "us-east-1b"], count.index)
   map_public_ip_on_launch = true
 
   tags = {
@@ -33,7 +44,7 @@ resource "aws_subnet" "private_subnet" {
   count                   = 2
   vpc_id                  = aws_vpc.jagdish_vpc.id
   cidr_block              = cidrsubnet(aws_vpc.jagdish_vpc.cidr_block, 8, count.index + 10)
-  availability_zone       = element(["ap-south-1a", "ap-south-1b"], count.index)
+  availability_zone       = element(["us-east-1a", "us-east-1b"], count.index)
   map_public_ip_on_launch = false
 
   tags = {
@@ -41,7 +52,7 @@ resource "aws_subnet" "private_subnet" {
   }
 }
 
-# Internet Gateway for public subnets
+# Internet Gateway
 resource "aws_internet_gateway" "jagdish_igw" {
   vpc_id = aws_vpc.jagdish_vpc.id
 
@@ -73,7 +84,6 @@ resource "aws_route_table_association" "public_assoc" {
 # NAT Gateway for private subnets
 resource "aws_eip" "nat_eip" {
   count = 1
-  # 'vpc = true' removed – now default
 }
 
 resource "aws_nat_gateway" "nat_gw" {
@@ -107,9 +117,13 @@ resource "aws_route_table_association" "private_assoc" {
   route_table_id = aws_route_table.private_rt.id
 }
 
-# Security Groups
+# Security Groups - tightened
+# EKS Control Plane SG
 resource "aws_security_group" "jagdish_cluster_sg" {
+  name   = "jagdish-cluster-sg"
   vpc_id = aws_vpc.jagdish_vpc.id
+
+  description = "EKS control plane SG (used for control plane endpoints)"
 
   egress {
     from_port   = 0
@@ -118,19 +132,39 @@ resource "aws_security_group" "jagdish_cluster_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "jagdish-cluster-sg"
-  }
+  tags = { Name = "jagdish-cluster-sg" }
 }
 
+# Node SG - allow only necessary ingress: cluster SG & admin SSH
 resource "aws_security_group" "jagdish_node_sg" {
+  name   = "jagdish-node-sg"
   vpc_id = aws_vpc.jagdish_vpc.id
 
+  # allow all traffic from control plane (EKS) and within nodes
   ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    description       = "From EKS control plane"
+    from_port         = 0
+    to_port           = 0
+    protocol          = "-1"
+    security_groups   = [aws_security_group.jagdish_cluster_sg.id]
+  }
+
+  # allow node <-> node traffic
+  ingress {
+    description     = "Node to Node"
+    from_port       = 0
+    to_port         = 0
+    protocol        = "-1"
+    self            = true
+  }
+
+  # allow SSH from admin CIDR only
+  ingress {
+    description = "SSH from admin"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [var.admin_cidr]
   }
 
   egress {
@@ -140,12 +174,10 @@ resource "aws_security_group" "jagdish_node_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  tags = {
-    Name = "jagdish-node-sg"
-  }
+  tags = { Name = "jagdish-node-sg" }
 }
 
-# IAM Roles
+# IAM Roles (unchanged)
 resource "aws_iam_role" "jagdish_cluster_role" {
   name = "jagdish-cluster-role"
 
@@ -204,7 +236,7 @@ resource "aws_iam_role_policy_attachment" "jagdish_node_group_registry_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
-# EKS Cluster - Private Endpoint
+# EKS Cluster - Private Endpoint only
 resource "aws_eks_cluster" "jagdish" {
   name     = "jagdish-cluster"
   role_arn = aws_iam_role.jagdish_cluster_role.arn
@@ -218,7 +250,7 @@ resource "aws_eks_cluster" "jagdish" {
   }
 }
 
-# Node Group in Private Subnets
+# Managed Node Group - 2 nodes only
 resource "aws_eks_node_group" "jagdish" {
   cluster_name    = aws_eks_cluster.jagdish.name
   node_group_name = "jagdish-node-group"
@@ -227,7 +259,7 @@ resource "aws_eks_node_group" "jagdish" {
 
   scaling_config {
     desired_size = 2
-    max_size     = 3
+    max_size     = 2
     min_size     = 2
   }
 
@@ -236,5 +268,11 @@ resource "aws_eks_node_group" "jagdish" {
   remote_access {
     ec2_ssh_key               = var.ssh_key_name
     source_security_group_ids = [aws_security_group.jagdish_node_sg.id]
+  }
+
+  capacity_type = "ON_DEMAND"
+
+  tags = {
+    Name = "jagdish-node-group"
   }
 }
